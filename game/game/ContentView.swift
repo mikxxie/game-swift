@@ -389,9 +389,9 @@ struct ContentView: View {
             }
         }
         .preferredColorScheme(.dark)
-        .ignoresSafeArea()
         .statusBarHidden(true)
         .persistentSystemOverlays(.hidden)
+        .ignoresSafeArea(.all, edges: .all)
     }
 }
 
@@ -406,9 +406,8 @@ struct JoinView: View {
             LinearGradient(colors: [Color(red: 0.42, green: 0.63, blue: 0.96),
                                     Color(red: 0.79, green: 0.88, blue: 0.98)],
                            startPoint: .top, endPoint: .bottom)
-                .ignoresSafeArea()
 
-            Color.black.opacity(0.55).ignoresSafeArea()
+            Color.black.opacity(0.55)
 
             VStack(spacing: 22) {
                 Text("BLOX ARENA")
@@ -472,6 +471,7 @@ struct JoinView: View {
             .cornerRadius(16)
             .shadow(color: .black.opacity(0.6), radius: 30, y: 12)
         }
+        .ignoresSafeArea(.all, edges: .all)
     }
 }
 
@@ -534,14 +534,7 @@ struct GameView: View {
                     }
                 }
                 .padding(.horizontal, 16)
-                .padding(.top, 12)
-                .background(
-                    LinearGradient(colors: [.black.opacity(0.35), .clear],
-                                   startPoint: .top, endPoint: .bottom)
-                        .frame(height: 100)
-                        .allowsHitTesting(false),
-                    alignment: .top
-                )
+                .padding(.top, 8)
 
                 Spacer()
 
@@ -549,15 +542,16 @@ struct GameView: View {
                     Joystick(client: client)
                         .frame(width: 150, height: 150)
                         .padding(.leading, 28)
-                        .padding(.bottom, 28)
+                        .padding(.bottom, 20)
                     Spacer()
                     JumpButton(client: client)
                         .frame(width: 74, height: 74)
                         .padding(.trailing, 28)
-                        .padding(.bottom, 28)
+                        .padding(.bottom, 20)
                 }
             }
         }
+        .ignoresSafeArea(.all, edges: .all)
     }
 }
 
@@ -629,7 +623,7 @@ struct Arena: View {
             .frame(width: size.width, height: size.height)
             .clipped()
         }
-        .ignoresSafeArea()
+        .ignoresSafeArea(.all, edges: .all)
     }
 }
 
@@ -969,11 +963,11 @@ struct Joystick: View {
             client.sendInput(dx: 0, dy: 0)
             return
         }
-        let screenUp = Float(-ny)
         let screenRight = Float(nx)
+        let screenUp = Float(-ny)
         let wx = (screenRight / Float(Render.isoCos) + screenUp / Float(Render.isoSin)) * 0.5
         let wy = (-screenRight / Float(Render.isoCos) + screenUp / Float(Render.isoSin)) * 0.5
-        client.sendInput(dx: wx, dy: wy)
+        client.sendInput(dx: wx, dy: -wy)
     }
 
     private func startTimer(maxR: CGFloat) {
