@@ -120,7 +120,14 @@ final class GameClient: ObservableObject {
             guard let verb = parts.first else { continue }
             switch verb {
             case "WELCOME":
-                if parts.count >= 2, let id = UInt32(parts[1]) { myId = id }
+                if parts.count >= 4, let id = UInt32(parts[1]),
+                   let x = Float(parts[2]), let y = Float(parts[3]) {
+                    myId = id
+                    myX = x
+                    myY = y
+                } else if parts.count >= 2, let id = UInt32(parts[1]) {
+                    myId = id
+                }
             case "JOINED":
                 guard parts.count >= 6,
                       let id = UInt32(parts[1]),
@@ -162,6 +169,30 @@ final class GameClient: ObservableObject {
                     let now = Int(Date().timeIntervalSince1970 * 1000)
                     pingMs = max(0, now - ms)
                 }
+            case "STATE":
+                var idx = 2
+                var seen = Set<UInt32>()
+                while idx + 3 < parts.count {
+                    if let id = UInt32(parts[idx]),
+                       let x = Float(parts[idx + 2]),
+                       let y = Float(parts[idx + 3]) {
+                        let name = parts[idx + 1]
+                        if id != myId {
+                            seen.insert(id)
+                            if let i = players.firstIndex(where: { $0.id == id }) {
+                                players[i].x = x
+                                players[i].y = y
+                            } else {
+                                players.append(RemotePlayer(id: id, name: name,
+                                                            x: x, y: y, dir: 0,
+                                                            renderX: x, renderY: y,
+                                                            renderDir: 0))
+                            }
+                        }
+                    }
+                    idx += 5
+                }
+                players.removeAll { !seen.contains($0.id) }
             default: break
             }
         }
@@ -192,7 +223,10 @@ final class GameClient: ObservableObject {
                     let t: Float = 0.25
                     self.players[i].renderX += (self.players[i].x - self.players[i].renderX) * t
                     self.players[i].renderY += (self.players[i].y - self.players[i].renderY) * t
-                    self.players[i].renderDir += (self.players[i].dir - self.players[i].renderDir) * t
+                    var dd = self.players[i].dir - self.players[i].renderDir
+                    while dd > 180 { dd -= 360 }
+                    while dd < -180 { dd += 360 }
+                    self.players[i].renderDir += dd * t
                 }
             }
         }
@@ -340,11 +374,9 @@ struct Arena: View {
 
             ZStack {
                 Sky()
-                Baseplate(size: size, scale: scale, worldSize: size)
+                Baseplate(size: size, scale: scale)
 
-                let sorted = client.players.sorted {
-                    $0.renderY > $1.renderY
-                }
+                let sorted = client.players.sorted { $0.renderY > $1.renderY }
                 ForEach(sorted) { p in
                     BlockyChar(color: colorFor(p.id),
                                name: p.name,
@@ -395,7 +427,6 @@ struct Sky: View {
 struct Baseplate: View {
     let size: CGSize
     let scale: CGFloat
-    let worldSize: CGSize
 
     var body: some View {
         Canvas { ctx, canvasSize in
@@ -419,9 +450,7 @@ struct Baseplate: View {
                                        width: studStep * 0.6,
                                        height: studStep * 0.6)
                         ctx.fill(Path(ellipseIn: c),
-                                 with: .color(Color(red: 0.35,
-                                                     green: 0.5,
-                                                     blue: 0.3)))
+                                 with: .color(Color(red: 0.35, green: 0.5, blue: 0.3)))
                         y += studStep
                     }
                     x += studStep
@@ -432,19 +461,6 @@ struct Baseplate: View {
             ctx.stroke(Path(border),
                        with: .color(Color(red: 0.25, green: 0.35, blue: 0.22)),
                        lineWidth: 8)
-
-            for i in stride(from: rect.minX, to: rect.maxX, by: 100 * scale) {
-                var p = Path()
-                p.move(to: CGPoint(x: i, y: rect.minY))
-                p.addLine(to: CGPoint(x: i, y: rect.maxY))
-                ctx.stroke(p, with: .color(Color.black.opacity(0.05)), lineWidth: 1)
-            }
-            for i in stride(from: rect.minY, to: rect.maxY, by: 100 * scale) {
-                var p = Path()
-                p.move(to: CGPoint(x: rect.minX, y: i))
-                p.addLine(to: CGPoint(x: rect.maxX, y: i))
-                ctx.stroke(p, with: .color(Color.black.opacity(0.05)), lineWidth: 1)
-            }
         }
     }
 }
@@ -465,21 +481,17 @@ struct BlockyChar: View {
 
             VStack(spacing: 2) {
                 ZStack {
-                    Rectangle()
-                        .fill(color)
-                    Rectangle()
-                        .stroke(Color.black.opacity(0.55), lineWidth: 1.2)
-                    Face(facing: facing, size: headH)
+                    Rectangle().fill(color)
+                    Rectangle().stroke(Color.black.opacity(0.55), lineWidth: 1.2)
+                    Face(facing: facing)
                 }
                 .frame(width: w * 0.9, height: headH)
                 .shadow(color: .black.opacity(0.3), radius: 3, y: 2)
 
                 ZStack {
-                    Rectangle()
-                        .fill(color)
-                    Rectangle()
-                        .stroke(Color.black.opacity(0.55), lineWidth: 1.2)
-                    Text(shortName)
+                    Rectangle().fill(color)
+                    Rectangle().stroke(Color.black.opacity(0.55), lineWidth: 1.2)
+                    Text(String(name.prefix(6)))
                         .font(.system(size: max(6, w * 0.24), weight: .black))
                         .foregroundStyle(.white)
                         .shadow(color: .black.opacity(0.6), radius: 1, y: 1)
@@ -505,15 +517,10 @@ struct BlockyChar: View {
             )
         }
     }
-
-    private var shortName: String {
-        String(name.prefix(6))
-    }
 }
 
 struct Face: View {
     let facing: Float
-    let size: CGFloat
 
     var body: some View {
         GeometryReader { geo in
@@ -522,7 +529,6 @@ struct Face: View {
             let rad = Double(facing) * .pi / 180
             let dx = CGFloat(cos(rad))
             let dy = -CGFloat(sin(rad))
-
             let eyeSize: CGFloat = max(2.5, w * 0.13)
             let off = w * 0.16
 
@@ -540,10 +546,9 @@ struct Face: View {
 struct Joystick: View {
     @ObservedObject var client: GameClient
     @State private var offset: CGSize = .zero
-    @State private var active = false
     @State private var timer: Timer?
 
-    let knobSize: CGFloat = 60
+    let knobSize: CGFloat = 62
 
     var body: some View {
         GeometryReader { geo in
@@ -572,7 +577,6 @@ struct Joystick: View {
             .gesture(
                 DragGesture(minimumDistance: 0)
                     .onChanged { v in
-                        active = true
                         let cx = geo.size.width / 2
                         let cy = geo.size.height / 2
                         var dx = v.location.x - cx
@@ -588,7 +592,6 @@ struct Joystick: View {
                         startTimer(maxR: maxR)
                     }
                     .onEnded { _ in
-                        active = false
                         withAnimation(.spring(response: 0.2)) { offset = .zero }
                         timer?.invalidate(); timer = nil
                     }
