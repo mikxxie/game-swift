@@ -536,9 +536,12 @@ struct Arena: View {
                                startPoint: .top, endPoint: .bottom)
                     .ignoresSafeArea()
 
-                Baseplate(size: size, camScale: camScale, client: client)
+                Baseplate(size: size, camScale: camScale,
+                          camX: client.myRenderX, camY: client.myRenderY)
 
-                ObstaclesLayer(size: size, camScale: camScale, client: client)
+                ObstaclesLayer(size: size, camScale: camScale,
+                               obstacles: client.obstacles,
+                               camX: client.myRenderX, camY: client.myRenderY)
 
                 let sorted = client.players.sorted { ($0.renderX + $0.renderY) < ($1.renderX + $1.renderY) }
                 ForEach(sorted) { p in
@@ -562,7 +565,8 @@ struct Arena: View {
 struct Baseplate: View {
     let size: CGSize
     let camScale: CGFloat
-    @ObservedObject var client: GameClient
+    let camX: Float
+    let camY: Float
 
     var body: some View {
         Canvas { ctx, _ in
@@ -570,8 +574,8 @@ struct Baseplate: View {
             let cy = size.height / 2
 
             func toScreen(_ wx: Float, _ wy: Float) -> CGPoint {
-                let rx = wx - client.myRenderX
-                let ry = wy - client.myRenderY
+                let rx = wx - camX
+                let ry = wy - camY
                 let ix = (CGFloat(rx) - CGFloat(ry)) * Render.isoCos
                 let iy = (CGFloat(rx) + CGFloat(ry)) * Render.isoSin
                 return CGPoint(x: cx + ix * camScale, y: cy + iy * camScale)
@@ -594,7 +598,7 @@ struct Baseplate: View {
             ctx.drawLayer { layer in
                 layer.clip(to: plate)
 
-                let stepWorld: Float = Render.studStep
+                let stepWorld = Float(Render.studStep)
                 var wx = -Render.worldSize
                 while wx <= Render.worldSize {
                     var wy = -Render.worldSize
@@ -633,7 +637,9 @@ struct Baseplate: View {
 struct ObstaclesLayer: View {
     let size: CGSize
     let camScale: CGFloat
-    @ObservedObject var client: GameClient
+    let obstacles: [Obstacle]
+    let camX: Float
+    let camY: Float
 
     var body: some View {
         Canvas { ctx, _ in
@@ -641,14 +647,14 @@ struct ObstaclesLayer: View {
             let cy = size.height / 2
 
             func toScreen(_ wx: Float, _ wy: Float) -> CGPoint {
-                let rx = wx - client.myRenderX
-                let ry = wy - client.myRenderY
+                let rx = wx - camX
+                let ry = wy - camY
                 let ix = (CGFloat(rx) - CGFloat(ry)) * Render.isoCos
                 let iy = (CGFloat(rx) + CGFloat(ry)) * Render.isoSin
                 return CGPoint(x: cx + ix * camScale, y: cy + iy * camScale)
             }
 
-            for b in client.obstacles {
+            for b in obstacles {
                 let bl = toScreen(b.x, b.y)
                 let br = toScreen(b.x + b.w, b.y)
                 let tr = toScreen(b.x + b.w, b.y + b.h)
