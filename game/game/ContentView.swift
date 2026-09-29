@@ -1,12 +1,42 @@
 import SwiftUI
 import Network
 
+// MARK: - Shared rendering constants
+
+enum Render {
+    static let worldSize: Float = 250
+    static let worldView: CGFloat = 0.85
+    static let charW: CGFloat = 30
+    static let charH: CGFloat = 50
+    static let headRatio: CGFloat = 0.34
+    static let torsoRatio: CGFloat = 0.36
+    static let studStep: CGFloat = 22
+    static let interp: Float = 0.22
+
+    // 6 colors, deterministic by id
+    static let palette: [(r: Double, g: Double, b: Double)] = [
+        (0.90, 0.25, 0.25),
+        (0.25, 0.45, 0.95),
+        (0.95, 0.78, 0.15),
+        (0.70, 0.30, 0.90),
+        (0.95, 0.55, 0.15),
+        (0.15, 0.80, 0.80),
+    ]
+
+    static func color(_ id: UInt32) -> Color {
+        let c = palette[Int(id) % palette.count]
+        return Color(red: c.r, green: c.g, blue: c.b)
+    }
+}
+
+// MARK: - Models
+
 struct RemotePlayer: Identifiable, Equatable {
     let id: UInt32
     var name: String
     var x: Float
     var y: Float
-    var dir: Float
+    var dir: Int
     var renderX: Float
     var renderY: Float
     var renderDir: Float
@@ -17,18 +47,19 @@ enum ConnectionState: Equatable {
     case failed(String)
 }
 
+// MARK: - Client
+
 @MainActor
 final class GameClient: ObservableObject {
     static let serverHost = "192.168.1.68"
     static let serverPort: UInt16 = 9932
-    static let worldMin: Float = -250
-    static let worldMax: Float = 250
 
     @Published var state: ConnectionState = .disconnected
     @Published var myId: UInt32 = 0
     @Published var myX: Float = 0
     @Published var myY: Float = 0
-    @Published var myDir: Float = 0
+    @Published var myDir: Int = 2
+    @Published var myRenderDir: Float = 2
     @Published var players: [RemotePlayer] = []
     @Published var pingMs: Int = 0
 
@@ -78,7 +109,7 @@ final class GameClient: ObservableObject {
         conn = nil
         state = .disconnected
         players.removeAll()
-        myId = 0; myX = 0; myY = 0; myDir = 0
+        myId = 0; myX = 0; myY = 0; myDir = 2
     }
 
     func send(_ msg: String) {
@@ -89,12 +120,18 @@ final class GameClient: ObservableObject {
 
     func move(dx: Float, dy: Float) {
         guard state == .connected else { return }
-        myX = min(max(myX + dx, Self.worldMin), Self.worldMax)
-        myY = min(max(myY + dy, Self.worldMin), Self.worldMax)
-        if abs(dx) > 0.001 || abs(dy) > 0.001 {
-            myDir = atan2(dy, dx) * 180 / .pi
+        myX = min(max(myX + dx, -Render.worldSize), Render.worldSize)
+        myY = min(max(myY + dy, -Render.worldSize), Render.worldSize)
+        if abs(dx) > 0.01 || abs(dy) > 0.01 {
+            myDir = snapDir8(deg: atan2(dy, dx) * 180 / .pi)
         }
-        send(String(format: "MOVE %.2f %.2f %.2f", myX, myY, myDir))
+        send(String(format: "MOVE %.2f %.2f %d", myX, myY, myDir))
+    }
+
+    private func snapDir8(deg: Float) -> Int {
+        var d = deg.truncatingRemainder(dividingBy: 360)
+        if d < 0 { d += 360 }
+        return Int(((d + 22.5) / 45).rounded(.down)) % 8
     }
 
     private func receiveLoop() {
@@ -120,22 +157,22 @@ final class GameClient: ObservableObject {
             guard let verb = parts.first else { continue }
             switch verb {
             case "WELCOME":
-                if parts.count >= 4, let id = UInt32(parts[1]),
-                   let x = Float(parts[2]), let y = Float(parts[3]) {
-                    myId = id
-                    myX = x
-                    myY = y
-                } else if parts.count >= 2, let id = UInt32(parts[1]) {
-                    myId = id
+                if parts.count >= 4,
+                   let id = UInt32(parts[1]),
+                   let x = Float(parts[2]),
+                   let y = Float(parts[3]) {
+                    myId = id; myX = x; myY = y
                 }
             case "JOINED":
-                guard parts.count >= 6,
+                guard parts.count >= 5,
                       let id = UInt32(parts[1]),
                       let x = Float(parts[3]),
-                      let y = Float(parts[4]),
-                      let d = Float(parts[5]) else { return }
-                upsert(RemotePlayer(id: id, name: parts[2], x: x, y: y, dir: d,
-                                    renderX: x, renderY: y, renderDir: d))
+                      let y = Float(parts[4]) else { return }
+                let d = 2
+                upsert(RemotePlayer(id: id, name: parts[2],
+                                    x: x, y: y, dir: d,
+                                    renderX: x, renderY: y,
+                                    renderDir: Float(d)))
             case "LEFT":
                 guard parts.count >= 2, let id = UInt32(parts[1]) else { return }
                 players.removeAll { $0.id == id }
@@ -148,7 +185,7 @@ final class GameClient: ObservableObject {
                           let id = UInt32(parts[idx]),
                           let x = Float(parts[idx + 1]),
                           let y = Float(parts[idx + 2]),
-                          let d = Float(parts[idx + 3]) else { break }
+                          let d = Int(parts[idx + 3]) else { break }
                     idx += 4
                     if id == myId { continue }
                     seen.insert(id)
@@ -160,47 +197,43 @@ final class GameClient: ObservableObject {
                         players.append(RemotePlayer(id: id, name: "player",
                                                     x: x, y: y, dir: d,
                                                     renderX: x, renderY: y,
-                                                    renderDir: d))
+                                                    renderDir: Float(d)))
                     }
                 }
                 players.removeAll { $0.id != myId && !seen.contains($0.id) }
+            case "STATE":
+                var idx = 2
+                while idx + 4 < parts.count {
+                    if let id = UInt32(parts[idx]),
+                       let x = Float(parts[idx + 2]),
+                       let y = Float(parts[idx + 3]),
+                       let d = Int(parts[idx + 4]) {
+                        let name = parts[idx + 1]
+                        if id != myId {
+                            upsert(RemotePlayer(id: id, name: name,
+                                                x: x, y: y, dir: d,
+                                                renderX: x, renderY: y,
+                                                renderDir: Float(d)))
+                        }
+                    }
+                    idx += 5
+                }
             case "PONG":
                 if parts.count >= 2, let ms = Int(parts[1]) {
                     let now = Int(Date().timeIntervalSince1970 * 1000)
                     pingMs = max(0, now - ms)
                 }
-            case "STATE":
-                var idx = 2
-                var seen = Set<UInt32>()
-                while idx + 3 < parts.count {
-                    if let id = UInt32(parts[idx]),
-                       let x = Float(parts[idx + 2]),
-                       let y = Float(parts[idx + 3]) {
-                        let name = parts[idx + 1]
-                        if id != myId {
-                            seen.insert(id)
-                            if let i = players.firstIndex(where: { $0.id == id }) {
-                                players[i].x = x
-                                players[i].y = y
-                            } else {
-                                players.append(RemotePlayer(id: id, name: name,
-                                                            x: x, y: y, dir: 0,
-                                                            renderX: x, renderY: y,
-                                                            renderDir: 0))
-                            }
-                        }
-                    }
-                    idx += 5
-                }
-                players.removeAll { !seen.contains($0.id) }
             default: break
             }
         }
     }
 
     private func upsert(_ p: RemotePlayer) {
-        if let i = players.firstIndex(where: { $0.id == p.id }) { players[i] = p }
-        else { players.append(p) }
+        if let i = players.firstIndex(where: { $0.id == p.id }) {
+            players[i].x = p.x; players[i].y = p.y; players[i].dir = p.dir
+        } else {
+            players.append(p)
+        }
     }
 
     private func startPing() {
@@ -217,23 +250,30 @@ final class GameClient: ObservableObject {
         tickTimer?.invalidate()
         tickTimer = Timer.scheduledTimer(withTimeInterval: 1.0 / 60.0,
                                          repeats: true) { [weak self] _ in
-            Task { @MainActor in
-                guard let self else { return }
-                for i in self.players.indices {
-                    let t: Float = 0.25
-                    self.players[i].renderX += (self.players[i].x - self.players[i].renderX) * t
-                    self.players[i].renderY += (self.players[i].y - self.players[i].renderY) * t
-                    var dd = self.players[i].dir - self.players[i].renderDir
-                    while dd > 180 { dd -= 360 }
-                    while dd < -180 { dd += 360 }
-                    self.players[i].renderDir += dd * t
-                }
-            }
+            Task { @MainActor in self?.tick() }
         }
+    }
+
+    private func tick() {
+        let t = Render.interp
+        for i in players.indices {
+            players[i].renderX += (players[i].x - players[i].renderX) * t
+            players[i].renderY += (players[i].y - players[i].renderY) * t
+            var dd = Float(players[i].dir) - players[i].renderDir
+            while dd > 180 { dd -= 360 }
+            while dd < -180 { dd += 360 }
+            players[i].renderDir += dd * t * 0.5
+        }
+        var mydd = Float(myDir) - myRenderDir
+        while mydd > 180 { mydd -= 360 }
+        while mydd < -180 { mydd += 360 }
+        myRenderDir += mydd * t * 0.5
     }
 
     private func stopTimers() { stopPing(); tickTimer?.invalidate(); tickTimer = nil }
 }
+
+// MARK: - Views
 
 struct ContentView: View {
     @StateObject private var client = GameClient()
@@ -267,7 +307,7 @@ struct JoinView: View {
 
     var body: some View {
         ZStack {
-            LinearGradient(colors: [Color(red: 0.08, green: 0.1, blue: 0.18),
+            LinearGradient(colors: [Color(red: 0.09, green: 0.13, blue: 0.22),
                                     Color(red: 0.02, green: 0.03, blue: 0.08)],
                            startPoint: .top, endPoint: .bottom)
                 .ignoresSafeArea()
@@ -276,7 +316,7 @@ struct JoinView: View {
                 Text("BLOX ARENA")
                     .font(.system(size: 46, weight: .black, design: .rounded))
                     .foregroundStyle(
-                        LinearGradient(colors: [.white, Color(red: 0.4, green: 0.9, blue: 0.5)],
+                        LinearGradient(colors: [.white, Color(red: 0.45, green: 0.95, blue: 0.6)],
                                        startPoint: .top, endPoint: .bottom))
 
                 Text("\(GameClient.serverHost):\(GameClient.serverPort)")
@@ -364,33 +404,32 @@ struct GameView: View {
 
 struct Arena: View {
     @ObservedObject var client: GameClient
-    let scaleFactor: CGFloat = 0.85
 
     var body: some View {
         GeometryReader { geo in
             let size = geo.size
             let scale = min(size.width, size.height) /
-                        CGFloat(GameClient.worldMax - GameClient.worldMin) * scaleFactor
+                        CGFloat(Render.worldSize * 2) * Render.worldView
 
             ZStack {
-                Sky()
+                LinearGradient(colors: [Color(red: 0.42, green: 0.63, blue: 0.96),
+                                        Color(red: 0.79, green: 0.88, blue: 0.98)],
+                               startPoint: .top, endPoint: .bottom)
+                    .ignoresSafeArea()
+
                 Baseplate(size: size, scale: scale)
 
                 let sorted = client.players.sorted { $0.renderY > $1.renderY }
                 ForEach(sorted) { p in
-                    BlockyChar(color: colorFor(p.id),
-                               name: p.name,
-                               isYou: false,
+                    BlockyChar(id: p.id, name: p.name, isYou: false,
                                facing: p.renderDir)
-                        .frame(width: 34, height: 56)
+                        .frame(width: Render.charW, height: Render.charH)
                         .position(point(for: p.renderX, p.renderY, in: size, scale: scale))
                 }
 
-                BlockyChar(color: Color(red: 0.35, green: 0.85, blue: 0.45),
-                           name: "you",
-                           isYou: true,
-                           facing: client.myDir)
-                    .frame(width: 34, height: 56)
+                BlockyChar(id: client.myId, name: "you", isYou: true,
+                           facing: client.myRenderDir)
+                    .frame(width: Render.charW, height: Render.charH)
                     .position(point(for: client.myX, client.myY, in: size, scale: scale))
             }
         }
@@ -400,27 +439,6 @@ struct Arena: View {
                        in size: CGSize, scale: CGFloat) -> CGPoint {
         CGPoint(x: size.width / 2 + CGFloat(x) * scale,
                 y: size.height / 2 - CGFloat(y) * scale)
-    }
-
-    private func colorFor(_ id: UInt32) -> Color {
-        let palette: [Color] = [
-            Color(red: 0.9,  green: 0.25, blue: 0.25),
-            Color(red: 0.25, green: 0.45, blue: 0.95),
-            Color(red: 0.95, green: 0.78, blue: 0.15),
-            Color(red: 0.7,  green: 0.25, blue: 0.9),
-            Color(red: 0.95, green: 0.55, blue: 0.15),
-            Color(red: 0.2,  green: 0.8,  blue: 0.8),
-        ]
-        return palette[Int(id) % palette.count]
-    }
-}
-
-struct Sky: View {
-    var body: some View {
-        LinearGradient(colors: [Color(red: 0.4, green: 0.6, blue: 0.95),
-                                Color(red: 0.75, green: 0.85, blue: 0.98)],
-                       startPoint: .top, endPoint: .bottom)
-            .ignoresSafeArea()
     }
 }
 
@@ -432,32 +450,47 @@ struct Baseplate: View {
         Canvas { ctx, canvasSize in
             let cx = canvasSize.width / 2
             let cy = canvasSize.height / 2
-            let half = CGFloat(GameClient.worldMax) * scale
+            let half = CGFloat(Render.worldSize) * scale
             let rect = CGRect(x: cx - half, y: cy - half,
                               width: half * 2, height: half * 2)
 
             ctx.fill(Path(rect),
                      with: .color(Color(red: 0.42, green: 0.58, blue: 0.36)))
 
-            let studStep = 22 * scale
-            if studStep > 5 {
+            let step = Render.studStep * scale
+            if step > 5 {
                 var x = rect.minX
                 while x <= rect.maxX {
                     var y = rect.minY
                     while y <= rect.maxY {
-                        let c = CGRect(x: x - studStep * 0.3,
-                                       y: y - studStep * 0.3,
-                                       width: studStep * 0.6,
-                                       height: studStep * 0.6)
+                        let c = CGRect(x: x - step * 0.3,
+                                       y: y - step * 0.3,
+                                       width: step * 0.6,
+                                       height: step * 0.6)
                         ctx.fill(Path(ellipseIn: c),
                                  with: .color(Color(red: 0.35, green: 0.5, blue: 0.3)))
-                        y += studStep
+                        y += step
                     }
-                    x += studStep
+                    x += step
                 }
             }
 
-            let border = rect.insetBy(dx: -6, dy: -6)
+            var grid = Path()
+            var gx = rect.minX
+            while gx <= rect.maxX {
+                grid.move(to: CGPoint(x: gx, y: rect.minY))
+                grid.addLine(to: CGPoint(x: gx, y: rect.maxY))
+                gx += 50 * scale
+            }
+            var gy = rect.minY
+            while gy <= rect.maxY {
+                grid.move(to: CGPoint(x: rect.minX, y: gy))
+                grid.addLine(to: CGPoint(x: rect.maxX, y: gy))
+                gy += 50 * scale
+            }
+            ctx.stroke(grid, with: .color(.black.opacity(0.06)), lineWidth: 1)
+
+            let border = rect.insetBy(dx: -4, dy: -4)
             ctx.stroke(Path(border),
                        with: .color(Color(red: 0.25, green: 0.35, blue: 0.22)),
                        lineWidth: 8)
@@ -466,7 +499,7 @@ struct Baseplate: View {
 }
 
 struct BlockyChar: View {
-    let color: Color
+    let id: UInt32
     let name: String
     let isYou: Bool
     let facing: Float
@@ -475,45 +508,45 @@ struct BlockyChar: View {
         GeometryReader { geo in
             let w = geo.size.width
             let h = geo.size.height
-            let headH = h * 0.34
-            let torsoH = h * 0.36
+            let headH = h * Render.headRatio
+            let torsoH = h * Render.torsoRatio
             let legH = h - headH - torsoH - 4
+            let bodyColor = isYou ? Color(red: 0.35, green: 0.85, blue: 0.45)
+                                  : Render.color(id)
 
             VStack(spacing: 2) {
                 ZStack {
-                    Rectangle().fill(color)
-                    Rectangle().stroke(Color.black.opacity(0.55), lineWidth: 1.2)
+                    Rectangle()
+                        .fill(bodyColor)
+                        .overlay(Rectangle().stroke(.black.opacity(0.55), lineWidth: 1.2))
                     Face(facing: facing)
                 }
                 .frame(width: w * 0.9, height: headH)
-                .shadow(color: .black.opacity(0.3), radius: 3, y: 2)
 
                 ZStack {
-                    Rectangle().fill(color)
-                    Rectangle().stroke(Color.black.opacity(0.55), lineWidth: 1.2)
+                    Rectangle()
+                        .fill(bodyColor)
+                        .overlay(Rectangle().stroke(.black.opacity(0.55), lineWidth: 1.2))
                     Text(String(name.prefix(6)))
                         .font(.system(size: max(6, w * 0.24), weight: .black))
                         .foregroundStyle(.white)
-                        .shadow(color: .black.opacity(0.6), radius: 1, y: 1)
                 }
                 .frame(width: w, height: torsoH)
-                .shadow(color: .black.opacity(0.3), radius: 3, y: 2)
 
                 HStack(spacing: 2) {
                     Rectangle()
-                        .fill(color.opacity(0.9))
-                        .overlay(Rectangle().stroke(Color.black.opacity(0.55), lineWidth: 1.2))
+                        .fill(bodyColor)
+                        .overlay(Rectangle().stroke(.black.opacity(0.55), lineWidth: 1.2))
                     Rectangle()
-                        .fill(color.opacity(0.9))
-                        .overlay(Rectangle().stroke(Color.black.opacity(0.55), lineWidth: 1.2))
+                        .fill(bodyColor)
+                        .overlay(Rectangle().stroke(.black.opacity(0.55), lineWidth: 1.2))
                 }
                 .frame(width: w, height: legH)
-                .shadow(color: .black.opacity(0.3), radius: 3, y: 2)
             }
+            .shadow(color: .black.opacity(0.35), radius: 3, y: 2)
             .overlay(
-                isYou ?
-                RoundedRectangle(cornerRadius: 4)
-                    .stroke(Color.white.opacity(0.8), lineWidth: 2) : nil
+                isYou ? RoundedRectangle(cornerRadius: 4)
+                    .stroke(.white.opacity(0.85), lineWidth: 2) : nil
             )
         }
     }
@@ -530,13 +563,11 @@ struct Face: View {
             let dx = CGFloat(cos(rad))
             let dy = -CGFloat(sin(rad))
             let eyeSize: CGFloat = max(2.5, w * 0.13)
-            let off = w * 0.16
+            let off = w * 0.14
 
             HStack(spacing: w * 0.2) {
-                Circle().fill(Color.black)
-                    .frame(width: eyeSize, height: eyeSize)
-                Circle().fill(Color.black)
-                    .frame(width: eyeSize, height: eyeSize)
+                Circle().fill(.black).frame(width: eyeSize, height: eyeSize)
+                Circle().fill(.black).frame(width: eyeSize, height: eyeSize)
             }
             .offset(x: dx * off, y: dy * off * 0.6 - h * 0.05)
         }
@@ -557,18 +588,15 @@ struct Joystick: View {
 
             ZStack {
                 Circle()
-                    .fill(Color.white.opacity(0.10))
-                    .overlay(Circle().stroke(Color.white.opacity(0.25), lineWidth: 2))
+                    .fill(.white.opacity(0.10))
+                    .overlay(Circle().stroke(.white.opacity(0.25), lineWidth: 2))
                     .frame(width: size, height: size)
 
                 Circle()
-                    .fill(
-                        RadialGradient(colors: [Color.white.opacity(0.95),
-                                                Color(red: 0.35, green: 0.85, blue: 0.5)],
-                                       center: .topLeading,
-                                       startRadius: 2,
-                                       endRadius: knobSize)
-                    )
+                    .fill(RadialGradient(
+                        colors: [.white.opacity(0.95),
+                                 Color(red: 0.35, green: 0.85, blue: 0.5)],
+                        center: .topLeading, startRadius: 2, endRadius: knobSize))
                     .frame(width: knobSize, height: knobSize)
                     .offset(offset)
                     .shadow(color: .black.opacity(0.4), radius: 6, y: 3)
@@ -602,18 +630,15 @@ struct Joystick: View {
     private func applyMove(dx: CGFloat, dy: CGFloat, maxR: CGFloat) {
         let nx = dx / maxR
         let ny = dy / maxR
-        let magnitude = sqrt(nx*nx + ny*ny)
-        guard magnitude > 0.1 else { return }
-        let speed: Float = 7
+        guard sqrt(nx*nx + ny*ny) > 0.1 else { return }
+        let speed: Float = 6
         client.move(dx: Float(nx) * speed, dy: Float(-ny) * speed)
     }
 
     private func startTimer(maxR: CGFloat) {
         guard timer == nil else { return }
         timer = Timer.scheduledTimer(withTimeInterval: 0.05, repeats: true) { _ in
-            Task { @MainActor in
-                applyMove(dx: offset.width, dy: offset.height, maxR: maxR)
-            }
+            Task { @MainActor in applyMove(dx: offset.width, dy: offset.height, maxR: maxR) }
         }
     }
 }
