@@ -1,10 +1,10 @@
 import SwiftUI
 
 @main
-struct CelesteiMusicApp: App {
+struct GameApp: App {
     var body: some Scene {
         WindowGroup {
-            ContentView()
+            GameClient()
         }
     }
 }
