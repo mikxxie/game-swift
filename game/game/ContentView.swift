@@ -9,12 +9,11 @@ struct RemotePlayer: Identifiable, Equatable {
     var dir: Float
     var renderX: Float
     var renderY: Float
+    var renderDir: Float
 }
 
 enum ConnectionState: Equatable {
-    case disconnected
-    case connecting
-    case connected
+    case disconnected, connecting, connected
     case failed(String)
 }
 
@@ -32,7 +31,6 @@ final class GameClient: ObservableObject {
     @Published var myDir: Float = 0
     @Published var players: [RemotePlayer] = []
     @Published var pingMs: Int = 0
-    @Published var log: [String] = []
 
     private var conn: NWConnection?
     private let queue = DispatchQueue(label: "udp.client")
@@ -47,7 +45,6 @@ final class GameClient: ObservableObject {
         let port = NWEndpoint.Port(rawValue: Self.serverPort)!
         let params = NWParameters.udp
         params.allowLocalEndpointReuse = true
-        params.requiredInterfaceType = .wifi
 
         let c = NWConnection(host: host, port: port, using: params)
         self.conn = c
@@ -58,23 +55,19 @@ final class GameClient: ObservableObject {
                 switch newState {
                 case .ready:
                     self.state = .connected
-                    self.appendLog("connected")
                     self.send("JOIN \(name)")
                     self.startPing()
                     self.startTick()
                     self.receiveLoop()
                 case .failed(let err):
                     self.state = .failed("\(err)")
-                    self.appendLog("failed: \(err)")
                 case .cancelled:
                     self.state = .disconnected
                     self.stopTimers()
-                default:
-                    break
+                default: break
                 }
             }
         }
-
         c.start(queue: queue)
     }
 
@@ -85,10 +78,7 @@ final class GameClient: ObservableObject {
         conn = nil
         state = .disconnected
         players.removeAll()
-        myId = 0
-        myX = 0
-        myY = 0
-        myDir = 0
+        myId = 0; myX = 0; myY = 0; myDir = 0
     }
 
     func send(_ msg: String) {
@@ -116,11 +106,8 @@ final class GameClient: ObservableObject {
                    let text = String(data: data, encoding: .utf8) {
                     self.handle(text)
                 }
-                if error == nil {
-                    self.receiveLoop()
-                } else {
-                    self.state = .failed("\(error!)")
-                }
+                if error == nil { self.receiveLoop() }
+                else { self.state = .failed("\(error!)") }
             }
         }
     }
@@ -131,27 +118,20 @@ final class GameClient: ObservableObject {
             guard !line.isEmpty else { continue }
             let parts = line.split(separator: " ").map(String.init)
             guard let verb = parts.first else { continue }
-
             switch verb {
             case "WELCOME":
-                if parts.count >= 2, let id = UInt32(parts[1]) {
-                    myId = id
-                    appendLog("id \(id)")
-                }
+                if parts.count >= 2, let id = UInt32(parts[1]) { myId = id }
             case "JOINED":
                 guard parts.count >= 6,
                       let id = UInt32(parts[1]),
                       let x = Float(parts[3]),
                       let y = Float(parts[4]),
                       let d = Float(parts[5]) else { return }
-                let name = parts[2]
-                upsert(RemotePlayer(id: id, name: name, x: x, y: y,
-                                    dir: d, renderX: x, renderY: y))
-                appendLog("\(name) joined")
+                upsert(RemotePlayer(id: id, name: parts[2], x: x, y: y, dir: d,
+                                    renderX: x, renderY: y, renderDir: d))
             case "LEFT":
                 guard parts.count >= 2, let id = UInt32(parts[1]) else { return }
                 players.removeAll { $0.id == id }
-                appendLog("id \(id) left")
             case "SNAP":
                 guard parts.count >= 2, let n = Int(parts[1]) else { return }
                 var idx = 2
@@ -172,7 +152,8 @@ final class GameClient: ObservableObject {
                     } else {
                         players.append(RemotePlayer(id: id, name: "player",
                                                     x: x, y: y, dir: d,
-                                                    renderX: x, renderY: y))
+                                                    renderX: x, renderY: y,
+                                                    renderDir: d))
                     }
                 }
                 players.removeAll { $0.id != myId && !seen.contains($0.id) }
@@ -181,20 +162,14 @@ final class GameClient: ObservableObject {
                     let now = Int(Date().timeIntervalSince1970 * 1000)
                     pingMs = max(0, now - ms)
                 }
-            case "ERR":
-                appendLog("server: \(line)")
-            default:
-                break
+            default: break
             }
         }
     }
 
     private func upsert(_ p: RemotePlayer) {
-        if let i = players.firstIndex(where: { $0.id == p.id }) {
-            players[i] = p
-        } else {
-            players.append(p)
-        }
+        if let i = players.firstIndex(where: { $0.id == p.id }) { players[i] = p }
+        else { players.append(p) }
     }
 
     private func startPing() {
@@ -205,10 +180,7 @@ final class GameClient: ObservableObject {
         }
     }
 
-    private func stopPing() {
-        pingTimer?.invalidate()
-        pingTimer = nil
-    }
+    private func stopPing() { pingTimer?.invalidate(); pingTimer = nil }
 
     private func startTick() {
         tickTimer?.invalidate()
@@ -220,21 +192,13 @@ final class GameClient: ObservableObject {
                     let t: Float = 0.25
                     self.players[i].renderX += (self.players[i].x - self.players[i].renderX) * t
                     self.players[i].renderY += (self.players[i].y - self.players[i].renderY) * t
+                    self.players[i].renderDir += (self.players[i].dir - self.players[i].renderDir) * t
                 }
             }
         }
     }
 
-    private func stopTimers() {
-        stopPing()
-        tickTimer?.invalidate()
-        tickTimer = nil
-    }
-
-    private func appendLog(_ s: String) {
-        log.append(s)
-        if log.count > 40 { log.removeFirst(log.count - 40) }
-    }
+    private func stopTimers() { stopPing(); tickTimer?.invalidate(); tickTimer = nil }
 }
 
 struct ContentView: View {
@@ -244,7 +208,6 @@ struct ContentView: View {
 
     var body: some View {
         ZStack {
-            Color(red: 0.15, green: 0.18, blue: 0.25).ignoresSafeArea()
             if hasJoined {
                 GameView(client: client, onLeave: {
                     client.disconnect()
@@ -259,6 +222,7 @@ struct ContentView: View {
             }
         }
         .preferredColorScheme(.dark)
+        .ignoresSafeArea()
     }
 }
 
@@ -268,41 +232,54 @@ struct JoinView: View {
     var onJoin: () -> Void
 
     var body: some View {
-        VStack(spacing: 24) {
-            Text("BLOX ARENA")
-                .font(.system(size: 44, weight: .black, design: .rounded))
-                .foregroundStyle(.white)
+        ZStack {
+            LinearGradient(colors: [Color(red: 0.08, green: 0.1, blue: 0.18),
+                                    Color(red: 0.02, green: 0.03, blue: 0.08)],
+                           startPoint: .top, endPoint: .bottom)
+                .ignoresSafeArea()
 
-            Text("\(GameClient.serverHost):\(GameClient.serverPort)")
-                .font(.footnote.monospaced())
-                .foregroundStyle(.gray)
+            VStack(spacing: 26) {
+                Text("BLOX ARENA")
+                    .font(.system(size: 46, weight: .black, design: .rounded))
+                    .foregroundStyle(
+                        LinearGradient(colors: [.white, Color(red: 0.4, green: 0.9, blue: 0.5)],
+                                       startPoint: .top, endPoint: .bottom))
 
-            TextField("your name", text: $name)
-                .textInputAutocapitalization(.never)
-                .autocorrectionDisabled()
-                .padding()
-                .background(Color.white.opacity(0.08))
-                .cornerRadius(12)
-                .foregroundStyle(.white)
-                .frame(maxWidth: 320)
+                Text("\(GameClient.serverHost):\(GameClient.serverPort)")
+                    .font(.footnote.monospaced())
+                    .foregroundStyle(.gray)
 
-            Button(action: onJoin) {
-                Text("PLAY")
-                    .font(.headline)
-                    .frame(maxWidth: 320)
+                TextField("your name", text: $name)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
                     .padding()
-                    .background(Color(red: 0.3, green: 0.75, blue: 0.35))
+                    .background(Color.white.opacity(0.08))
+                    .cornerRadius(14)
                     .foregroundStyle(.white)
-                    .cornerRadius(12)
-            }
+                    .frame(maxWidth: 320)
 
-            if case .failed(let msg) = client.state {
-                Text("failed: \(msg)")
-                    .font(.caption)
-                    .foregroundStyle(.red)
+                Button(action: onJoin) {
+                    Text("PLAY")
+                        .font(.headline)
+                        .frame(maxWidth: 320)
+                        .padding()
+                        .background(
+                            LinearGradient(colors: [Color(red: 0.35, green: 0.85, blue: 0.4),
+                                                    Color(red: 0.2, green: 0.65, blue: 0.3)],
+                                           startPoint: .top, endPoint: .bottom))
+                        .foregroundStyle(.white)
+                        .cornerRadius(14)
+                        .shadow(color: .black.opacity(0.4), radius: 6, y: 3)
+                }
+
+                if case .failed(let msg) = client.state {
+                    Text("failed: \(msg)")
+                        .font(.caption)
+                        .foregroundStyle(.red)
+                }
             }
+            .padding()
         }
-        .padding()
     }
 }
 
@@ -311,321 +288,329 @@ struct GameView: View {
     var onLeave: () -> Void
 
     var body: some View {
-        VStack(spacing: 0) {
-            HStack {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("id \(client.myId)")
+        ZStack {
+            Arena(client: client)
+
+            VStack {
+                HStack {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("id \(client.myId)")
+                            .font(.caption.monospaced())
+                            .foregroundStyle(.white)
+                        Text(String(format: "%.1f, %.1f", client.myX, client.myY))
+                            .font(.caption2.monospaced())
+                            .foregroundStyle(.gray)
+                    }
+                    Spacer()
+                    Text("\(client.players.count + 1) online")
                         .font(.caption.monospaced())
                         .foregroundStyle(.white)
-                    Text(String(format: "%.1f, %.1f", client.myX, client.myY))
-                        .font(.caption2.monospaced())
-                        .foregroundStyle(.gray)
+                    Text("\(client.pingMs)ms")
+                        .font(.caption.monospaced())
+                        .foregroundStyle(client.pingMs < 80 ? .green : .orange)
+                    Button("leave", action: onLeave)
+                        .font(.caption)
+                        .foregroundStyle(.red)
                 }
+                .padding(.horizontal)
+                .padding(.top, 44)
+                .padding(.bottom, 8)
+                .background(
+                    LinearGradient(colors: [.black.opacity(0.6), .clear],
+                                   startPoint: .top, endPoint: .bottom))
                 Spacer()
-                Text("\(client.players.count + 1) online")
-                    .font(.caption.monospaced())
-                    .foregroundStyle(.white)
-                Text("\(client.pingMs)ms")
-                    .font(.caption.monospaced())
-                    .foregroundStyle(client.pingMs < 80 ? .green : .orange)
-                Button("leave", action: onLeave)
-                    .font(.caption)
-                    .foregroundStyle(.red)
+                Joystick(client: client)
+                    .frame(width: 160, height: 160)
+                    .padding(.bottom, 40)
             }
-            .padding(.horizontal)
-            .padding(.vertical, 8)
-            .background(Color.black.opacity(0.4))
-
-            Arena(client: client)
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-
-            Pad(client: client)
-                .frame(height: 220)
-                .padding()
         }
+        .ignoresSafeArea()
     }
 }
 
 struct Arena: View {
     @ObservedObject var client: GameClient
+    let scaleFactor: CGFloat = 0.85
 
     var body: some View {
         GeometryReader { geo in
             let size = geo.size
             let scale = min(size.width, size.height) /
-                        CGFloat(GameClient.worldMax - GameClient.worldMin) * 1.6
+                        CGFloat(GameClient.worldMax - GameClient.worldMin) * scaleFactor
 
             ZStack {
-                Baseplate(size: size, scale: scale)
+                Sky()
+                Baseplate(size: size, scale: scale, worldSize: size)
 
-                ForEach(client.players) { p in
-                    Blocky(
-                        color: colorFor(p.id),
-                        name: p.name,
-                        facingDeg: p.dir
-                    )
-                    .frame(width: 26 * 1.0, height: 44 * 1.0)
-                    .position(point(for: p.renderX, p.renderY, in: size, scale: scale))
+                let sorted = client.players.sorted {
+                    $0.renderY > $1.renderY
+                }
+                ForEach(sorted) { p in
+                    BlockyChar(color: colorFor(p.id),
+                               name: p.name,
+                               isYou: false,
+                               facing: p.renderDir)
+                        .frame(width: 34, height: 56)
+                        .position(point(for: p.renderX, p.renderY, in: size, scale: scale))
                 }
 
-                Blocky(
-                    color: Color(red: 0.35, green: 0.8, blue: 0.4),
-                    name: "you",
-                    facingDeg: client.myDir
-                )
-                .frame(width: 26, height: 44)
-                .position(point(for: client.myX, client.myY, in: size, scale: scale))
+                BlockyChar(color: Color(red: 0.35, green: 0.85, blue: 0.45),
+                           name: "you",
+                           isYou: true,
+                           facing: client.myDir)
+                    .frame(width: 34, height: 56)
+                    .position(point(for: client.myX, client.myY, in: size, scale: scale))
             }
         }
     }
 
     private func point(for x: Float, _ y: Float,
                        in size: CGSize, scale: CGFloat) -> CGPoint {
-        let cx = size.width / 2
-        let cy = size.height / 2
-        return CGPoint(
-            x: cx + CGFloat(x) * scale,
-            y: cy - CGFloat(y) * scale
-        )
+        CGPoint(x: size.width / 2 + CGFloat(x) * scale,
+                y: size.height / 2 - CGFloat(y) * scale)
     }
 
     private func colorFor(_ id: UInt32) -> Color {
         let palette: [Color] = [
-            Color(red: 0.85, green: 0.2,  blue: 0.2),
-            Color(red: 0.2,  green: 0.4,  blue: 0.9),
-            Color(red: 0.95, green: 0.75, blue: 0.1),
-            Color(red: 0.65, green: 0.2,  blue: 0.85),
-            Color(red: 0.95, green: 0.5,  blue: 0.15),
-            Color(red: 0.2,  green: 0.75, blue: 0.75),
+            Color(red: 0.9,  green: 0.25, blue: 0.25),
+            Color(red: 0.25, green: 0.45, blue: 0.95),
+            Color(red: 0.95, green: 0.78, blue: 0.15),
+            Color(red: 0.7,  green: 0.25, blue: 0.9),
+            Color(red: 0.95, green: 0.55, blue: 0.15),
+            Color(red: 0.2,  green: 0.8,  blue: 0.8),
         ]
         return palette[Int(id) % palette.count]
+    }
+}
+
+struct Sky: View {
+    var body: some View {
+        LinearGradient(colors: [Color(red: 0.4, green: 0.6, blue: 0.95),
+                                Color(red: 0.75, green: 0.85, blue: 0.98)],
+                       startPoint: .top, endPoint: .bottom)
+            .ignoresSafeArea()
     }
 }
 
 struct Baseplate: View {
     let size: CGSize
     let scale: CGFloat
+    let worldSize: CGSize
 
     var body: some View {
         Canvas { ctx, canvasSize in
             let cx = canvasSize.width / 2
             let cy = canvasSize.height / 2
-            let minX = CGFloat(GameClient.worldMin) * scale
-            let maxX = CGFloat(GameClient.worldMax) * scale
-            let minY = CGFloat(GameClient.worldMin) * scale
-            let maxY = CGFloat(GameClient.worldMax) * scale
+            let half = CGFloat(GameClient.worldMax) * scale
+            let rect = CGRect(x: cx - half, y: cy - half,
+                              width: half * 2, height: half * 2)
 
-            let rect = CGRect(
-                x: cx + minX,
-                y: cy - maxY,
-                width: maxX - minX,
-                height: maxY - minY
-            )
+            ctx.fill(Path(rect),
+                     with: .color(Color(red: 0.42, green: 0.58, blue: 0.36)))
 
-            ctx.fill(Path(rect), with: .color(Color(red: 0.35, green: 0.5, blue: 0.3)))
-
-            let studStep = 20 * scale
-            if studStep > 4 {
+            let studStep = 22 * scale
+            if studStep > 5 {
                 var x = rect.minX
                 while x <= rect.maxX {
                     var y = rect.minY
                     while y <= rect.maxY {
-                        let c = CGRect(x: x - studStep * 0.28,
-                                       y: y - studStep * 0.28,
-                                       width: studStep * 0.56,
-                                       height: studStep * 0.56)
+                        let c = CGRect(x: x - studStep * 0.3,
+                                       y: y - studStep * 0.3,
+                                       width: studStep * 0.6,
+                                       height: studStep * 0.6)
                         ctx.fill(Path(ellipseIn: c),
-                                 with: .color(Color(red: 0.3, green: 0.44, blue: 0.26)))
+                                 with: .color(Color(red: 0.35,
+                                                     green: 0.5,
+                                                     blue: 0.3)))
                         y += studStep
                     }
                     x += studStep
                 }
             }
 
-            let border = rect.insetBy(dx: -4, dy: -4)
+            let border = rect.insetBy(dx: -6, dy: -6)
             ctx.stroke(Path(border),
-                       with: .color(Color(red: 0.2, green: 0.3, blue: 0.18)),
-                       lineWidth: 6)
+                       with: .color(Color(red: 0.25, green: 0.35, blue: 0.22)),
+                       lineWidth: 8)
+
+            for i in stride(from: rect.minX, to: rect.maxX, by: 100 * scale) {
+                var p = Path()
+                p.move(to: CGPoint(x: i, y: rect.minY))
+                p.addLine(to: CGPoint(x: i, y: rect.maxY))
+                ctx.stroke(p, with: .color(Color.black.opacity(0.05)), lineWidth: 1)
+            }
+            for i in stride(from: rect.minY, to: rect.maxY, by: 100 * scale) {
+                var p = Path()
+                p.move(to: CGPoint(x: rect.minX, y: i))
+                p.addLine(to: CGPoint(x: rect.maxX, y: i))
+                ctx.stroke(p, with: .color(Color.black.opacity(0.05)), lineWidth: 1)
+            }
         }
     }
 }
 
-struct Blocky: View {
+struct BlockyChar: View {
     let color: Color
     let name: String
-    let facingDeg: Float
+    let isYou: Bool
+    let facing: Float
 
     var body: some View {
         GeometryReader { geo in
             let w = geo.size.width
             let h = geo.size.height
-            let headH = h * 0.38
-            let torsoH = h * 0.42
-            let legH = h - headH - torsoH
+            let headH = h * 0.34
+            let torsoH = h * 0.36
+            let legH = h - headH - torsoH - 4
 
-            VStack(spacing: 1) {
+            VStack(spacing: 2) {
                 ZStack {
                     Rectangle()
-                        .fill(color.opacity(0.95))
+                        .fill(color)
                     Rectangle()
-                        .stroke(Color.black.opacity(0.6), lineWidth: 1)
-                    Face(facingDeg: facingDeg)
+                        .stroke(Color.black.opacity(0.55), lineWidth: 1.2)
+                    Face(facing: facing, size: headH)
                 }
-                .frame(width: w * 0.85, height: headH)
+                .frame(width: w * 0.9, height: headH)
+                .shadow(color: .black.opacity(0.3), radius: 3, y: 2)
 
                 ZStack {
                     Rectangle()
                         .fill(color)
                     Rectangle()
-                        .stroke(Color.black.opacity(0.6), lineWidth: 1)
+                        .stroke(Color.black.opacity(0.55), lineWidth: 1.2)
                     Text(shortName)
-                        .font(.system(size: max(6, w * 0.28), weight: .bold))
+                        .font(.system(size: max(6, w * 0.24), weight: .black))
                         .foregroundStyle(.white)
+                        .shadow(color: .black.opacity(0.6), radius: 1, y: 1)
                 }
                 .frame(width: w, height: torsoH)
+                .shadow(color: .black.opacity(0.3), radius: 3, y: 2)
 
-                HStack(spacing: 1) {
+                HStack(spacing: 2) {
                     Rectangle()
-                        .fill(color.opacity(0.85))
-                        .overlay(Rectangle().stroke(Color.black.opacity(0.6), lineWidth: 1))
+                        .fill(color.opacity(0.9))
+                        .overlay(Rectangle().stroke(Color.black.opacity(0.55), lineWidth: 1.2))
                     Rectangle()
-                        .fill(color.opacity(0.85))
-                        .overlay(Rectangle().stroke(Color.black.opacity(0.6), lineWidth: 1))
+                        .fill(color.opacity(0.9))
+                        .overlay(Rectangle().stroke(Color.black.opacity(0.55), lineWidth: 1.2))
                 }
                 .frame(width: w, height: legH)
+                .shadow(color: .black.opacity(0.3), radius: 3, y: 2)
             }
+            .overlay(
+                isYou ?
+                RoundedRectangle(cornerRadius: 4)
+                    .stroke(Color.white.opacity(0.8), lineWidth: 2) : nil
+            )
         }
     }
 
     private var shortName: String {
-        let s = name.prefix(6)
-        return String(s)
+        String(name.prefix(6))
     }
 }
 
 struct Face: View {
-    let facingDeg: Float
+    let facing: Float
+    let size: CGFloat
 
     var body: some View {
         GeometryReader { geo in
             let w = geo.size.width
             let h = geo.size.height
-            let dx = CGFloat(cos(Double(facingDeg) * .pi / 180))
-            let dy = CGFloat(sin(Double(facingDeg) * .pi / 180))
+            let rad = Double(facing) * .pi / 180
+            let dx = CGFloat(cos(rad))
+            let dy = -CGFloat(sin(rad))
 
-            let eyeOff: CGFloat = w * 0.22
-            let eyeSize: CGFloat = max(2, w * 0.14)
+            let eyeSize: CGFloat = max(2.5, w * 0.13)
+            let off = w * 0.16
 
             HStack(spacing: w * 0.2) {
-                eye
+                Circle().fill(Color.black)
                     .frame(width: eyeSize, height: eyeSize)
-                eye
+                Circle().fill(Color.black)
                     .frame(width: eyeSize, height: eyeSize)
             }
-            .offset(x: dx * w * 0.08, y: dy * h * 0.12 - h * 0.1)
+            .offset(x: dx * off, y: dy * off * 0.6 - h * 0.05)
         }
-    }
-
-    private var eye: some View {
-        Circle().fill(Color.black)
     }
 }
 
-struct Pad: View {
+struct Joystick: View {
     @ObservedObject var client: GameClient
-    let step: Float = 6
+    @State private var offset: CGSize = .zero
+    @State private var active = false
+    @State private var timer: Timer?
+
+    let knobSize: CGFloat = 60
 
     var body: some View {
         GeometryReader { geo in
-            let s = min(geo.size.width, geo.size.height)
-            let cx = geo.size.width / 2
-            let cy = geo.size.height / 2
-            let r = s / 2 - 10
+            let size = min(geo.size.width, geo.size.height)
+            let radius = size / 2
 
             ZStack {
                 Circle()
-                    .fill(Color.white.opacity(0.06))
-                    .frame(width: r * 2, height: r * 2)
-                    .position(x: cx, y: cy)
+                    .fill(Color.white.opacity(0.10))
+                    .overlay(Circle().stroke(Color.white.opacity(0.25), lineWidth: 2))
+                    .frame(width: size, height: size)
 
-                ForEach(Direction.allCases, id: \.self) { dir in
-                    PadButton(symbol: dir.symbol) {
-                        let v = dir.vector
-                        client.move(dx: v.x * step, dy: v.y * step)
-                    }
-                    .position(x: cx + dir.offset.x * r * 0.68,
-                              y: cy + dir.offset.y * r * 0.68)
-                }
+                Circle()
+                    .fill(
+                        RadialGradient(colors: [Color.white.opacity(0.95),
+                                                Color(red: 0.35, green: 0.85, blue: 0.5)],
+                                       center: .topLeading,
+                                       startRadius: 2,
+                                       endRadius: knobSize)
+                    )
+                    .frame(width: knobSize, height: knobSize)
+                    .offset(offset)
+                    .shadow(color: .black.opacity(0.4), radius: 6, y: 3)
             }
-        }
-    }
-}
-
-struct PadButton: View {
-    let symbol: String
-    let action: () -> Void
-    @State private var pressing = false
-    @State private var timer: Timer?
-
-    var body: some View {
-        Image(systemName: symbol)
-            .font(.system(size: 26, weight: .bold))
-            .foregroundStyle(.white)
-            .frame(width: 68, height: 68)
-            .background(Circle().fill(pressing ?
-                Color(red: 0.3, green: 0.75, blue: 0.35) :
-                Color.white.opacity(0.12)))
-            .scaleEffect(pressing ? 0.92 : 1.0)
+            .contentShape(Circle())
             .gesture(
                 DragGesture(minimumDistance: 0)
-                    .onChanged { _ in start() }
-                    .onEnded { _ in stop() }
+                    .onChanged { v in
+                        active = true
+                        let cx = geo.size.width / 2
+                        let cy = geo.size.height / 2
+                        var dx = v.location.x - cx
+                        var dy = v.location.y - cy
+                        let d = sqrt(dx*dx + dy*dy)
+                        let maxR = radius - knobSize / 2
+                        if d > maxR {
+                            dx *= maxR / d
+                            dy *= maxR / d
+                        }
+                        offset = CGSize(width: dx, height: dy)
+                        applyMove(dx: dx, dy: dy, maxR: maxR)
+                        startTimer(maxR: maxR)
+                    }
+                    .onEnded { _ in
+                        active = false
+                        withAnimation(.spring(response: 0.2)) { offset = .zero }
+                        timer?.invalidate(); timer = nil
+                    }
             )
+        }
     }
 
-    private func start() {
+    private func applyMove(dx: CGFloat, dy: CGFloat, maxR: CGFloat) {
+        let nx = dx / maxR
+        let ny = dy / maxR
+        let magnitude = sqrt(nx*nx + ny*ny)
+        guard magnitude > 0.1 else { return }
+        let speed: Float = 7
+        client.move(dx: Float(nx) * speed, dy: Float(-ny) * speed)
+    }
+
+    private func startTimer(maxR: CGFloat) {
         guard timer == nil else { return }
-        pressing = true
-        action()
         timer = Timer.scheduledTimer(withTimeInterval: 0.05, repeats: true) { _ in
-            action()
-        }
-    }
-
-    private func stop() {
-        pressing = false
-        timer?.invalidate()
-        timer = nil
-    }
-}
-
-enum Direction: CaseIterable {
-    case up, down, left, right
-
-    var symbol: String {
-        switch self {
-        case .up: return "arrow.up"
-        case .down: return "arrow.down"
-        case .left: return "arrow.left"
-        case .right: return "arrow.right"
-        }
-    }
-
-    var vector: (x: Float, y: Float) {
-        switch self {
-        case .up: return (0, 1)
-        case .down: return (0, -1)
-        case .left: return (-1, 0)
-        case .right: return (1, 0)
-        }
-    }
-
-    var offset: (x: CGFloat, y: CGFloat) {
-        switch self {
-        case .up: return (0, -1)
-        case .down: return (0, 1)
-        case .left: return (-1, 0)
-        case .right: return (1, 0)
+            Task { @MainActor in
+                applyMove(dx: offset.width, dy: offset.height, maxR: maxR)
+            }
         }
     }
 }
