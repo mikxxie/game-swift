@@ -2,22 +2,22 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-    <key>NSAppTransportSecurity</key>
-    <dict>
-    <key>NSAllowsLocalNetworking</key>
-    <true/>
-    </dict>
-    <key>NSLocalNetworkUsageDescription</key>
-    <string>Connect to the game server on local network.</string>
-    <key>CFBundleIdentifier</key>
-    <string>local.game</string>
-    <key>CFBundleExecutable</key>
-    <string>game</string>
-    <key>CFBundleName</key>
-    <string>game</string>
-    <key>CFBundleShortVersionString</key>
-    <string>0.9.0</string> <!--we start at 0.8.8-->
-    <key>CFBundleVersion</key>
-    <string>0</string>
+	<key>CFBundleExecutable</key>
+	<string>game</string>
+	<key>CFBundleIdentifier</key>
+	<string>local.game</string>
+	<key>CFBundleName</key>
+	<string>game</string>
+	<key>CFBundleShortVersionString</key>
+	<string>0.9.1</string>
+	<key>CFBundleVersion</key>
+	<string>1</string>
+	<key>NSAppTransportSecurity</key>
+	<dict>
+		<key>NSAllowsLocalNetworking</key>
+		<true/>
+	</dict>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>Connect to the game server on local network.</string>
 </dict>
 </plist>
