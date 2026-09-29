@@ -1,0 +1,253 @@
+name: Generate Genuine Xcode Project Structure
+
+on:
+  workflow_dispatch:
+
+jobs:
+  create-project:
+    runs-on: macos-latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GH_PAT }}
+
+      - name: Set up Xcode Environment
+        run: |
+          sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
+          xcodebuild -version
+          
+      - name: Install Project Generator Tool
+        run: |
+          # Installs a safe, native Ruby gem used to generate flawless xcodeproj configs via CLI
+          gem install xcodeproj
+
+      - name: Generate True Xcode Template
+        run: |
+          APP_NAME="game"
+          BUNDLE_ID="com.aramco.cycomm"
+          
+          # Create internal source directories
+          mkdir -p "$APP_NAME/$APP_NAME"
+          mkdir -p "$APP_NAME/$APP_NAME/Assets.xcassets/AppIcon.appiconset"
+          
+          # 1. Create the App Entry Point
+          cat << 'EOF' > "$APP_NAME/$APP_NAME/App.swift"
+          import SwiftUI
+
+          @main
+          struct CelesteiMusicApp: App {
+              var body: some Scene {
+                  WindowGroup {
+                      ContentView()
+                  }
+              }
+          }
+          EOF
+
+          # 2. Create the Local Music Player Interface & Audio Logic
+          cat << 'EOF' > "$APP_NAME/$APP_NAME/ContentView.swift"
+          import SwiftUI
+          import MediaPlayer
+          import AVFoundation
+
+          struct ContentView: View {
+              @State private var isPlaying = false
+              @State private var currentTrackTitle = "No Track Selected"
+              @State private var musicPlayer = MPMusicPlayerController.applicationMusicPlayer
+              
+              var body: some View {
+                  ZStack {
+                      Color(.systemBackground)
+                          .ignoresSafeArea()
+                      
+                      VStack(spacing: 40) {
+                          Text("game")
+                              .font(.largeTitle)
+                              .bold()
+                              .tracking(1.5)
+                              .padding(.top, 40)
+                          
+                          // iPod-style Classic Player Album Art Placeholder
+                          ZStack {
+                              RoundedRectangle(cornerRadius: 20)
+                                  .fill(Color(.secondarySystemBackground))
+                                  .frame(width: 260, height: 260)
+                                  .shadow(radius: 10)
+                              
+                              Image(systemName: "music.note")
+                                  .font(.system(size: 80))
+                                  .foregroundColor(.accentColor)
+                          }
+                          
+                          VStack(spacing: 8) {
+                              Text(currentTrackTitle)
+                                  .font(.title2)
+                                  .bold()
+                                  .multilineTextAlignment(.center)
+                                  .padding(.horizontal)
+                          }
+                          
+                          // Playback Controls
+                          HStack(spacing: 50) {
+                              Button(action: { previousTrack() }) {
+                                  Image(systemName: "backward.fill")
+                                      .font(.title)
+                              }
+                              
+                              Button(action: { togglePlayback() }) {
+                                  Image(systemName: isPlaying ? "pause.circle.fill" : "play.circle.fill")
+                                      .font(.system(size: 70))
+                              }
+                              
+                              Button(action: { nextTrack() }) {
+                                  Image(systemName: "forward.fill")
+                                      .font(.title)
+                              }
+                          }
+                          
+                          // Local Library Sync Button
+                          Button(action: { requestLibraryAccess() }) {
+                              Label("Scan Local iPod Library", systemName: "arrow.clockwise")
+                                  .font(.headline)
+                                  .foregroundColor(.white)
+                                  .padding()
+                                  .frame(maxWidth: .infinity)
+                                  .background(Color.accentColor)
+                                  .cornerRadius(12)
+                                  .padding(.horizontal, 40)
+                          }
+                          
+                          Spacer()
+                      }
+                  }
+                  .onAppear {
+                      setupNotifications()
+                  }
+              }
+              
+              // --- MUSIC LOGIC ---
+              
+              func requestLibraryAccess() {
+                  MPMediaLibrary.requestAuthorization { status in
+                      if status == .authorized {
+                          DispatchQueue.main.async {
+                              self.musicPlayer.setQueue(with: .songs())
+                              self.updateCurrentTrack()
+                          }
+                      }
+                  }
+              }
+              
+              func togglePlayback() {
+                  if isPlaying {
+                      musicPlayer.pause()
+                      isPlaying = false
+                  } else {
+                      musicPlayer.play()
+                      isPlaying = true
+                  }
+                  updateCurrentTrack()
+              }
+              
+              func nextTrack() {
+                  musicPlayer.skipToNextItem()
+                  updateCurrentTrack()
+              }
+              
+              func previousTrack() {
+                  musicPlayer.skipToPreviousItem()
+                  updateCurrentTrack()
+              }
+              
+              func updateCurrentTrack() {
+                  DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+                      if let nowPlaying = self.musicPlayer.nowPlayingItem {
+                          self.currentTrackTitle = nowPlaying.title ?? "Unknown Track"
+                      }
+                  }
+              }
+              
+              func setupNotifications() {
+                  NotificationCenter.default.addObserver(forName: .MPMusicPlayerControllerNowPlayingItemDidChange, object: musicPlayer, queue: .main) { _ in
+                      self.updateCurrentTrack()
+                  }
+              }
+          }
+          EOF
+
+          # 3. Create permissions manifest (Crucial: iOS requires explicit user notice to scan local iPod files)
+          cat << 'EOF' > "$APP_NAME/$APP_NAME/Info.plist"
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+              <key>NSAppleMusicUsageDescription</key>
+              <string>game requires access to your local media library to stream and play songs directly on your iPod.</string>
+              <key>CFBundleIdentifier</key>
+              <string>com.celestei.music</string>
+              <key>CFBundleExecutable</key>
+              <string>game</string>
+              <key>CFBundleName</key>
+              <string>game</string>
+              <key>CFBundleShortVersionString</key>
+              <string>1.0</string>
+              <key>CFBundleVersion</key>
+              <string>1</string>
+          </dict>
+          </plist>
+          EOF
+
+          # 4. Generate App Icon structural manifest
+          cat << 'EOF' > "$APP_NAME/$APP_NAME/Assets.xcassets/AppIcon.appiconset/Contents.json"
+          {
+            "images" : [
+              { "idiom" : "iphone", "size" : "20x20", "scale" : "2x" },
+              { "idiom" : "iphone", "size" : "20x20", "scale" : "3x" }
+            ],
+            "info" : { "author" : "xcode", "version" : 1 }
+          }
+          EOF
+
+          # 5. Programmatically build a true Xcode Project File targeting your iPod 
+          cat << 'EOF' > generate_project.rb
+          require 'xcodeproj'
+          project_path = 'game/game.xcodeproj'
+          project = Xcodeproj::Project.new(project_path)
+          
+          # Create targets
+          target = project.new_target(:application, 'game', :ios, '18.0')
+          target.build_configurations.each do |config|
+            config.build_settings['PRODUCT_BUNDLE_IDENTIFIER'] = 'com.celestei.music'
+            config.build_settings['INFOPLIST_FILE'] = 'game/Info.plist'
+            config.build_settings['MARKETING_VERSION'] = '1.0'
+            config.build_settings['CURRENT_PROJECT_VERSION'] = '1'
+            config.build_settings['SWIFT_VERSION'] = '5.0'
+          end
+          
+          # Add source references natively to compiler mapping
+          main_group = project.main_group.new_group('game')
+          app_file = main_group.new_file('game/App.swift')
+          view_file = main_group.new_file('game/ContentView.swift')
+          plist_file = main_group.new_file('game/Info.plist')
+          
+          target.add_file_references([app_file, view_file])
+          project.save
+          EOF
+          
+          ruby generate_project.rb
+          rm generate_project.rb
+
+      - name: Commit and Push full Xcode workspace structure
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          
+          git add .
+          if git diff-index --quiet HEAD --; then
+            echo "No changes found."
+          else
+            git commit -m "feat: generate true game source and authentic xcodeproj configuration"
+            git push origin HEAD:${{ github.ref }}
+          fi
