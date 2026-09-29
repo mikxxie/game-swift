@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>NSAppleMusicUsageDescription</key>
+    <string>game requires access to your local media library to stream and play songs directly on your iPod.</string>
+    <key>CFBundleIdentifier</key>
+    <string>com.celestei.music</string>
+    <key>CFBundleExecutable</key>
+    <string>game</string>
+    <key>CFBundleName</key>
+    <string>game</string>
+    <key>CFBundleShortVersionString</key>
+    <string>1.0</string>
+    <key>CFBundleVersion</key>
+    <string>1</string>
+</dict>
+</plist>
