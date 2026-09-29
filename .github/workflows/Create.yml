@@ -1,0 +1,61 @@
+name: Compile game (.ipa)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set up Xcode Environment
+        run: |
+          sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
+
+      - name: Validate Project Syntax
+        run: |
+          PBX_FILE=$(find . -name "project.pbxproj")
+          echo "Validating: $PBX_FILE"
+          plutil -lint "$PBX_FILE"
+
+      - name: Build Archive
+        run: |
+          cd *"game"* || cd "game"
+
+          xcodebuild -project "game.xcodeproj" \
+                     -scheme "game" \
+                     -configuration Release \
+                     -sdk iphoneos \
+                     -archivePath $RUNNER_TEMP/game.xcarchive \
+                     archive \
+                     CODE_SIGN_IDENTITY="" \
+                     CODE_SIGNING_REQUIRED=NO \
+                     CODE_SIGNING_ALLOWED=NO
+
+      - name: Package .ipa
+        run: |
+          mkdir -p $RUNNER_TEMP/build_output/Payload
+          mkdir -p deploy
+
+          cp -R "$RUNNER_TEMP/game.xcarchive/Products/Applications/game.app" \
+                 "$RUNNER_TEMP/build_output/Payload/"
+
+          cd "$RUNNER_TEMP/build_output"
+          /usr/bin/zip -r game.ipa Payload
+
+          # Put the final IPA where FTP expects it
+          cp game.ipa $GITHUB_WORKSPACE/deploy/game.ipa
+
+          unzip -l game.ipa
+
+      - name: Upload via FTP
+        uses: SamKirkland/FTP-Deploy-Action@v4.3.5
+        with:
+          server: ${{ secrets.FTP_SERVER }}
+          username: ${{ secrets.FTP_USERNAME }}
+          password: ${{ secrets.FTP_PASSWORD }}
+          local-dir: deploy/
+          server-dir: /admin_www/mikxxie.k.vu/htdocs/
