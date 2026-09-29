@@ -7,13 +7,66 @@ jobs:
   build:
     runs-on: macos-latest
 
+    permissions:
+      contents: write
+
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Set up Xcode Environment
         run: |
           sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
+
+      - name: Bump CFBundleShortVersionString
+        run: |
+          PLIST_FILE=$(find . -name "Info.plist" -not -path "*/build/*" | head -n 1)
+          if [ -z "$PLIST_FILE" ]; then
+            echo "❌ No Info.plist found"
+            exit 1
+          fi
+          echo "Updating: $PLIST_FILE"
+
+          CURRENT=$(/usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" "$PLIST_FILE")
+          echo "Current version: $CURRENT"
+
+          # Split into major.minor.patch and bump patch
+          MAJOR=$(echo "$CURRENT" | cut -d. -f1)
+          MINOR=$(echo "$CURRENT" | cut -d. -f2)
+          PATCH=$(echo "$CURRENT" | cut -d. -f3)
+
+          # Default missing parts to 0
+          MAJOR=${MAJOR:-0}
+          MINOR=${MINOR:-0}
+          PATCH=${PATCH:-0}
+
+          NEW_PATCH=$((PATCH + 1))
+          NEW_VERSION="${MAJOR}.${MINOR}.${NEW_PATCH}"
+          echo "New version: $NEW_VERSION"
+
+          /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $NEW_VERSION" "$PLIST_FILE"
+
+          # Also bump CFBundleVersion (build number) which iOS requires to be unique
+          CURRENT_BUILD=$(/usr/libexec/PlistBuddy -c "Print :CFBundleVersion" "$PLIST_FILE" 2>/dev/null || echo "0")
+          if ! [[ "$CURRENT_BUILD" =~ ^[0-9]+$ ]]; then
+            CURRENT_BUILD=0
+          fi
+          NEW_BUILD=$((CURRENT_BUILD + 1))
+          /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $NEW_BUILD" "$PLIST_FILE"
+          echo "New build number: $NEW_BUILD"
+
+          # Save new version for later steps
+          echo "NEW_VERSION=$NEW_VERSION" >> $GITHUB_ENV
+
+      - name: Commit Version Bump
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "Bump version to ${{ env.NEW_VERSION }} [skip ci]" || echo "No changes to commit"
+          git push
 
       - name: Validate Project Syntax
         run: |
