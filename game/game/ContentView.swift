@@ -82,12 +82,62 @@ final class GameClient: ObservableObject {
     @Published var players: [RemotePlayer] = []
     @Published var obstacles: [Obstacle] = []
     @Published var pingMs: Int = 0
+    @Published var serverReachable: Bool? = nil
+    @Published var statusText: String = ""
 
     private var conn: NWConnection?
     private let queue = DispatchQueue(label: "udp.client")
     private var pingTimer: Timer?
     private var tickTimer: Timer?
     private var lastInputSent: String = ""
+
+    func probeServer() async {
+        await MainActor.run {
+            self.serverReachable = nil
+            self.statusText = "checking server…"
+        }
+
+        let host = NWEndpoint.Host(Self.serverHost)
+        let port = NWEndpoint.Port(rawValue: Self.serverPort)!
+        let params = NWParameters.udp
+        params.allowLocalEndpointReuse = true
+
+        let probe = NWConnection(host: host, port: port, using: params)
+        let result = await withCheckedContinuation { (cont: CheckedContinuation<Bool, Never>) in
+            var resumed = false
+            let resumeOnce: (Bool) -> Void = { ok in
+                guard !resumed else { return }
+                resumed = true
+                probe.cancel()
+                cont.resume(returning: ok)
+            }
+            probe.stateUpdateHandler = { s in
+                switch s {
+                case .ready:
+                    probe.send(content: "PING\n".data(using: .utf8)!,
+                               completion: .contentProcessed { _ in })
+                case .failed, .cancelled:
+                    resumeOnce(false)
+                default: break
+                }
+            }
+            probe.start(queue: DispatchQueue(label: "udp.probe"))
+            probe.receive(minimumIncompleteLength: 1, maximumLength: 256) { data, _, _, _ in
+                if let data, !data.isEmpty { resumeOnce(true) }
+                else { resumeOnce(false) }
+            }
+            DispatchQueue.global().asyncAfter(deadline: .now() + 1.5) {
+                resumeOnce(false)
+            }
+        }
+
+        await MainActor.run {
+            self.serverReachable = result
+            self.statusText = result
+                ? "server reachable"
+                : "server unreachable — check Wi-Fi and that the server is running"
+        }
+    }
 
     func connect(name: String) {
         guard state != .connected && state != .connecting else { return }
@@ -135,6 +185,8 @@ final class GameClient: ObservableObject {
         myX = 0; myY = 0; myZ = 0
         myRenderX = 0; myRenderY = 0; myRenderZ = 0
         myDir = 2; myRenderDir = 2
+        serverReachable = nil
+        statusText = ""
     }
 
     func send(_ msg: String) {
@@ -347,6 +399,7 @@ struct JoinView: View {
     @Binding var name: String
     @ObservedObject var client: GameClient
     var onJoin: () -> Void
+    @State private var probing = false
 
     var body: some View {
         ZStack {
@@ -378,17 +431,35 @@ struct JoinView: View {
                     .frame(width: 260)
                     .multilineTextAlignment(.center)
 
-                Button(action: onJoin) {
-                    Text("PLAY")
+                Button(action: {
+                    probing = true
+                    Task {
+                        await client.probeServer()
+                        probing = false
+                        if client.serverReachable == true {
+                            onJoin()
+                        }
+                    }
+                }) {
+                    Text(probing ? "CHECKING…" : "PLAY")
                         .font(.system(size: 15, weight: .bold))
                         .frame(width: 260)
                         .padding(12)
-                        .background(Color(red: 0.29, green: 0.31, blue: 0.34))
+                        .background(probing
+                                    ? Color(red: 0.24, green: 0.26, blue: 0.29)
+                                    : Color(red: 0.29, green: 0.31, blue: 0.34))
                         .foregroundStyle(.white)
                         .cornerRadius(10)
                 }
+                .disabled(probing)
 
-                if case .failed(let msg) = client.state {
+                if client.serverReachable == false {
+                    Text(client.statusText)
+                        .font(.caption)
+                        .foregroundStyle(Color(red: 0.82, green: 0.54, blue: 0.54))
+                        .multilineTextAlignment(.center)
+                        .frame(maxWidth: 260)
+                } else if case .failed(let msg) = client.state {
                     Text("failed: \(msg)")
                         .font(.caption)
                         .foregroundStyle(Color(red: 0.82, green: 0.54, blue: 0.54))
@@ -474,21 +545,19 @@ struct GameView: View {
 
                 Spacer()
 
-                HStack {
-                    Spacer()
+                HStack(alignment: .bottom) {
                     Joystick(client: client)
                         .frame(width: 150, height: 150)
                         .padding(.leading, 28)
-                        .padding(.bottom, 32)
+                        .padding(.bottom, 28)
                     Spacer()
                     JumpButton(client: client)
                         .frame(width: 74, height: 74)
                         .padding(.trailing, 28)
-                        .padding(.bottom, 32)
+                        .padding(.bottom, 28)
                 }
             }
         }
-        .ignoresSafeArea()
     }
 }
 
@@ -534,7 +603,6 @@ struct Arena: View {
                 LinearGradient(colors: [Color(red: 0.588, green: 0.686, blue: 0.784),
                                         Color(red: 0.804, green: 0.855, blue: 0.902)],
                                startPoint: .top, endPoint: .bottom)
-                    .ignoresSafeArea()
 
                 Baseplate(size: size, camScale: camScale,
                           camX: client.myRenderX, camY: client.myRenderY)
@@ -558,7 +626,10 @@ struct Arena: View {
                            size: size, camScale: camScale,
                            centerX: client.myRenderX, centerY: client.myRenderY)
             }
+            .frame(width: size.width, height: size.height)
+            .clipped()
         }
+        .ignoresSafeArea()
     }
 }
 
@@ -898,11 +969,11 @@ struct Joystick: View {
             client.sendInput(dx: 0, dy: 0)
             return
         }
-        let screenUp = Float(ny)
+        let screenUp = Float(-ny)
         let screenRight = Float(nx)
         let wx = (screenRight / Float(Render.isoCos) + screenUp / Float(Render.isoSin)) * 0.5
         let wy = (-screenRight / Float(Render.isoCos) + screenUp / Float(Render.isoSin)) * 0.5
-        client.sendInput(dx: wx, dy: -wy)
+        client.sendInput(dx: wx, dy: wy)
     }
 
     private func startTimer(maxR: CGFloat) {
